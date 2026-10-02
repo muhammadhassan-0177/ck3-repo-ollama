@@ -22,7 +22,7 @@ Generate **Crusader Kings 3 portrait DNA codes** from any face photo using local
 - Windows 10/11 (64-bit)
 - Python 3.10 or higher → [python.org](https://www.python.org/downloads/)
 - Ollama → [ollama.com](https://ollama.com/download)
-- GPU recommended (NVIDIA), but CPU works too
+- Ollama runs locally and automatically uses a supported GPU when available; CPU works too. GPU support depends on the drivers and Ollama installation on each machine.
 
 ---
 
@@ -50,6 +50,10 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+### Verify GPU usage
+
+Generate DNA, then run `ollama ps` in another terminal. Its `PROCESSOR` column shows whether the model is using GPU or CPU. The app also displays Ollama's GPU/CPU allocation after each generation. If it reports CPU, install or update the GPU driver and restart Ollama.
 
 ---
 

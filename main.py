@@ -223,6 +223,26 @@ def check_ollama():
     except:
         return False, {}
 
+def check_ollama_gpu():
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/ps")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            models = json.loads(r.read()).get("models", [])
+
+        model_name = state.ollama_model
+        if ":" not in model_name:
+            model_name += ":latest"
+        model = next((m for m in models if m.get("name") == model_name), None)
+        if not model:
+            return "unavailable"
+
+        vram_size = int(model.get("size_vram", 0))
+        if vram_size <= 0:
+            return "CPU"
+        return "GPU" if vram_size >= int(model.get("size", 0)) else "GPU + CPU"
+    except Exception:
+        return "unavailable"
+
 # ── App ───────────────────────────────────────────────────────────────────────
 async def main(page: ft.Page):
     page.title = "CK3 DNA Generator"
@@ -352,8 +372,9 @@ async def main(page: ft.Page):
 
         if ok:
             state.dna_result = dna
-            gen_status.value = "Done!"
-            gen_status.color = SUCCESS
+            acceleration = check_ollama_gpu()
+            gen_status.value = f"Done ({acceleration})"
+            gen_status.color = WARN if acceleration == "CPU" else SUCCESS
 
             labels = {
                 "face_shape": "Face", "skin_tone": "Skin", "eye_color": "Eyes",
@@ -419,7 +440,7 @@ async def main(page: ft.Page):
                     margin=ft.Margin(10, 0, 0, 0),
                 ),
                 ft.Container(expand=True),
-                ft.Text("Ollama · RTX 5090", size=11, color=MUTED),
+                ft.Text("Ollama · local inference", size=11, color=MUTED),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ], spacing=0, tight=True),
         bgcolor=PANEL, padding=ft.Padding(20, 14, 20, 14),
