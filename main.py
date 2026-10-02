@@ -13,7 +13,6 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
-from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +38,7 @@ GOLD_DIM= "#6b4f1a"   # Dimmed gold for inactive
 # ── Estado ────────────────────────────────────────────────────────────────────
 class State:
     image_path = ""
+    image_data = b""
     gender = "female"
     dna_result = ""
     ollama_model = "llava"
@@ -173,12 +173,10 @@ def build_dna_from_analysis(analysis, gender):
     return dna
 
 # ── Ollama inference ──────────────────────────────────────────────────────────
-def run_ollama(image_path, gender):
+def run_ollama(image_data, gender):
     started_at = time.monotonic()
     logger.info("Analysis started (model=%s, gender=%s)", state.ollama_model, gender)
     try:
-        with open(image_path, "rb") as f:
-            image_data = f.read()
         logger.info("Image loaded (%s bytes)", len(image_data))
         img_b64 = base64.b64encode(image_data).decode()
 
@@ -357,11 +355,23 @@ async def main(page: ft.Page):
         files = await ft.FilePicker().pick_files(
             dialog_title="Select image",
             allowed_extensions=["jpg", "jpeg", "png", "webp"],
+            with_data=True,
         )
         if files:
-            state.image_path = files[0].path
-            logger.info("Image selected (type=%s)", Path(state.image_path).suffix.lower())
-            img_display.src = state.image_path
+            selected_file = files[0]
+            state.image_path = selected_file.path or ""
+            state.image_data = selected_file.bytes or b""
+            if not state.image_data:
+                logger.error("Selected image has no readable file data")
+                gen_status.value = "Could not read selected image. Try another file."
+                gen_status.color = ACCENT
+                page.update()
+                return
+
+            file_extension = selected_file.name.rsplit(".", 1)[-1].lower()
+            logger.info("Image selected (type=%s, %s bytes)", file_extension, len(state.image_data))
+            img_display.src = None
+            img_display.src_base64 = base64.b64encode(state.image_data).decode("ascii")
             img_display.visible = True
             img_ph.visible = False
             gen_btn.disabled = False
@@ -410,7 +420,7 @@ async def main(page: ft.Page):
         copy_status.value = ""
         page.update()
 
-        ok, analysis, dna = run_ollama(state.image_path, state.gender)
+        ok, analysis, dna = run_ollama(state.image_data, state.gender)
         gen_spinner.visible = False
 
         if ok:
