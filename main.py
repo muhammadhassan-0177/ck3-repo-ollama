@@ -1,6 +1,6 @@
 """
 CK3 DNA Generator - Flet 0.84 + Ollama
-Sin llama-cpp-python, usa la API REST de Ollama en localhost:11434
+Sin llama-cpp-python, usa la API REST de Ollama en https://vea1ql81travn6-11434.proxy.runpod.net/
 """
 
 import flet as ft
@@ -176,7 +176,7 @@ def run_ollama(image_path, gender):
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            "http://localhost:11434/api/generate",
+            "https://vea1ql81travn6-11434.proxy.runpod.net/api/generate",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST"
@@ -217,7 +217,7 @@ def run_ollama(image_path, gender):
 
 def check_ollama():
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
+        req = urllib.request.Request("https://vea1ql81travn6-11434.proxy.runpod.net/api/tags")
         with urllib.request.urlopen(req, timeout=5) as r:
             return True, json.loads(r.read())
     except:
@@ -225,7 +225,7 @@ def check_ollama():
 
 def check_ollama_gpu():
     try:
-        req = urllib.request.Request("http://localhost:11434/api/ps")
+        req = urllib.request.Request("https://vea1ql81travn6-11434.proxy.runpod.net/api/ps")
         with urllib.request.urlopen(req, timeout=5) as r:
             models = json.loads(r.read()).get("models", [])
 
