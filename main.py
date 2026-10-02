@@ -1,17 +1,27 @@
 """
 CK3 DNA Generator - Flet 0.84 + Ollama
-Sin llama-cpp-python, usa la API REST de Ollama en https://vea1ql81travn6-11434.proxy.runpod.net/
+Sin llama-cpp-python, usa la API REST de Ollama en localhost:11434
 """
 
 import flet as ft
 import threading
 import base64
 import json
+import logging
 import re
 import subprocess
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+OLLAMA_BASE_URL = "http://localhost:11434"
 
 # ── Crusader Kings 3 color palette ───────────────────────────────────────────
 BG      = "#0e0b08"   # Deep black parchment
@@ -60,6 +70,7 @@ Analyze the REAL person in the photo. Do NOT copy the placeholder values in angl
 # ── DNA builder ───────────────────────────────────────────────────────────────
 def build_dna_from_analysis(analysis, gender):
     import random
+    logger.info("Building CK3 DNA for gender=%s", gender)
     HAIR = {"blonde":"210 210 210 210","light_brown":"190 190 190 190","brown":"180 207 180 207",
             "dark_brown":"150 170 150 170","black":"120 140 120 140","red":"30 30 30 30","auburn":"35 20 25 25"}
     SKIN = {"very_light":"220 170 220 170","light":"200 155 200 155","medium":"141 103 141 103",
@@ -158,13 +169,18 @@ def build_dna_from_analysis(analysis, gender):
         f'\t\t\tcustom_hair={"female_hair_western_10" if gender == "female" else "male_hair_western_10"}\n'
         f'\t\t}}\n\t}}\n\tentity={{ 0 0 }}\n}}'
     )
+    logger.info("CK3 DNA generated (%s characters)", len(dna))
     return dna
 
 # ── Ollama inference ──────────────────────────────────────────────────────────
 def run_ollama(image_path, gender):
+    started_at = time.monotonic()
+    logger.info("Analysis started (model=%s, gender=%s)", state.ollama_model, gender)
     try:
         with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
+            image_data = f.read()
+        logger.info("Image loaded (%s bytes)", len(image_data))
+        img_b64 = base64.b64encode(image_data).decode()
 
         payload = {
             "model": state.ollama_model,
@@ -176,56 +192,67 @@ def run_ollama(image_path, gender):
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            "https://vea1ql81travn6-11434.proxy.runpod.net/api/generate",
+            f"{OLLAMA_BASE_URL}/api/generate",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST"
         )
 
+        logger.info("Sending image to Ollama for analysis")
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read().decode())
+        logger.info("Ollama response received in %.1f seconds", time.monotonic() - started_at)
 
         raw = result.get("response", "")
-        print("\n====== RAW OLLAMA OUTPUT ======")
-        print(raw[:400])
-        print("================================\n")
 
         clean = re.sub(r"```json|```", "", raw).strip()
         match = re.search(r'\{[\s\S]*\}', clean)
         if match:
             try:
                 analysis = json.loads(match.group())
+                logger.info("Analysis JSON parsed successfully")
             except json.JSONDecodeError:
+                logger.warning("Ollama response contained invalid JSON; using fallback traits")
                 analysis = {}
         else:
+            logger.warning("No JSON object found in Ollama response; using fallback traits")
             analysis = {}
 
         # Fallback si el modelo no devolvió campos válidos
         if not analysis.get("hair_color"):
+            logger.warning("Required traits missing; deriving fallback traits from response")
             t = raw.lower()
             analysis["hair_color"] = "black" if "black hair" in t else "blonde" if "blonde" in t else "brown"
             analysis["eye_color"]  = "blue" if "blue" in t else "green" if "green" in t else "brown"
             analysis["skin_tone"]  = "light" if ("fair" in t or "light skin" in t) else "medium"
 
         dna = build_dna_from_analysis(analysis, gender)
+        logger.info("Analysis completed successfully in %.1f seconds", time.monotonic() - started_at)
         return True, analysis, dna
 
-    except urllib.error.URLError:
+    except urllib.error.URLError as exc:
+        logger.exception("Could not reach the Ollama inference service")
         return False, {}, "Ollama not responding. Is it running? Run: ollama serve"
     except Exception as e:
+        logger.exception("Analysis failed")
         return False, {}, str(e)
 
 def check_ollama():
+    logger.info("Checking Ollama connection")
     try:
-        req = urllib.request.Request("https://vea1ql81travn6-11434.proxy.runpod.net/api/tags")
+        req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/tags")
         with urllib.request.urlopen(req, timeout=5) as r:
-            return True, json.loads(r.read())
-    except:
+            data = json.loads(r.read())
+        logger.info("Ollama connection successful (%s models available)", len(data.get("models", [])))
+        return True, data
+    except Exception as exc:
+        logger.warning("Ollama connection check failed: %s", exc)
         return False, {}
 
 def check_ollama_gpu():
+    logger.info("Checking Ollama model GPU allocation")
     try:
-        req = urllib.request.Request("https://vea1ql81travn6-11434.proxy.runpod.net/api/ps")
+        req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/ps")
         with urllib.request.urlopen(req, timeout=5) as r:
             models = json.loads(r.read()).get("models", [])
 
@@ -234,17 +261,23 @@ def check_ollama_gpu():
             model_name += ":latest"
         model = next((m for m in models if m.get("name") == model_name), None)
         if not model:
+            logger.warning("Model %s is not listed as running; GPU allocation unavailable", model_name)
             return "unavailable"
 
         vram_size = int(model.get("size_vram", 0))
+        model_size = int(model.get("size", 0))
+        logger.info("Model memory allocation: %.1f MiB VRAM / %.1f MiB total",
+                    vram_size / (1024 * 1024), model_size / (1024 * 1024))
         if vram_size <= 0:
             return "CPU"
-        return "GPU" if vram_size >= int(model.get("size", 0)) else "GPU + CPU"
-    except Exception:
+        return "GPU" if vram_size >= model_size else "GPU + CPU"
+    except Exception as exc:
+        logger.warning("Could not read GPU allocation: %s", exc)
         return "unavailable"
 
 # ── App ───────────────────────────────────────────────────────────────────────
 async def main(page: ft.Page):
+    logger.info("Starting CK3 DNA Generator")
     page.title = "CK3 DNA Generator"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = BG
@@ -265,7 +298,11 @@ async def main(page: ft.Page):
         border_color=BORDER, focused_border_color=ACCENT,
         width=260, height=45,
     )
-    model_dropdown.on_change = lambda e: setattr(state, "ollama_model", e.control.value)
+    def set_model(e):
+        state.ollama_model = e.control.value
+        logger.info("Model selected: %s", state.ollama_model)
+
+    model_dropdown.on_change = set_model
 
     ollama_status = ft.Text("Checking Ollama...", color=MUTED, size=12)
     ollama_dot    = ft.Container(width=8, height=8, border_radius=4, bgcolor=WARN)
@@ -316,12 +353,14 @@ async def main(page: ft.Page):
 
     # ── FilePicker async ──────────────────────────────────────────────────────
     async def pick_image(e):
+        logger.info("Opening image picker")
         files = await ft.FilePicker().pick_files(
             dialog_title="Select image",
             allowed_extensions=["jpg", "jpeg", "png", "webp"],
         )
         if files:
             state.image_path = files[0].path
+            logger.info("Image selected (type=%s)", Path(state.image_path).suffix.lower())
             img_display.src = state.image_path
             img_display.visible = True
             img_ph.visible = False
@@ -332,6 +371,7 @@ async def main(page: ft.Page):
     # ── Acciones ──────────────────────────────────────────────────────────────
     def set_gender(g):
         state.gender = g
+        logger.info("Gender selected: %s", g)
         btn_female.style.bgcolor = ACCENT if g == "female" else CARD
         btn_female.style.color   = "#0e0b08" if g == "female" else TXT
         btn_male.style.bgcolor   = ACCENT if g == "male" else CARD
@@ -339,6 +379,7 @@ async def main(page: ft.Page):
         page.update()
 
     def check_ollama_status():
+        logger.info("Updating Ollama status in app")
         ok, data = check_ollama()
         if ok:
             models = [m["name"] for m in data.get("models", [])]
@@ -355,8 +396,10 @@ async def main(page: ft.Page):
             ollama_status.value = "Ollama not detected — run: ollama serve"
             ollama_status.color = ACCENT
         page.update()
+        logger.info("Ollama status display updated")
 
     def analysis_thread():
+        logger.info("Generate action started")
         gen_btn.disabled = True
         gen_spinner.visible = True
         gen_status.value = "Sending image to Ollama..."
@@ -375,6 +418,7 @@ async def main(page: ft.Page):
             acceleration = check_ollama_gpu()
             gen_status.value = f"Done ({acceleration})"
             gen_status.color = WARN if acceleration == "CPU" else SUCCESS
+            logger.info("Displaying successful result (compute=%s)", acceleration)
 
             labels = {
                 "face_shape": "Face", "skin_tone": "Skin", "eye_color": "Eyes",
@@ -402,19 +446,29 @@ async def main(page: ft.Page):
         else:
             gen_status.value = f"Error: {dna}"
             gen_status.color = ACCENT
+            logger.error("Displaying analysis failure: %s", dna)
 
         gen_btn.disabled = False
         page.update()
+        logger.info("Generate action finished")
 
     def copy_dna():
         if state.dna_result:
-            subprocess.Popen(['clip'], stdin=subprocess.PIPE).communicate(
-                state.dna_result.encode('utf-8')
-            )
-            copy_status.value = "Copied!"
-            page.update()
+            logger.info("Copying generated DNA to clipboard")
+            try:
+                subprocess.Popen(['clip'], stdin=subprocess.PIPE).communicate(
+                    state.dna_result.encode('utf-8')
+                )
+                copy_status.value = "Copied!"
+                logger.info("DNA copied to clipboard")
+            except Exception:
+                copy_status.value = "Copy failed"
+                logger.exception("Could not copy DNA to clipboard")
+            finally:
+                page.update()
 
     # Verificar Ollama al arrancar
+    logger.info("Starting background Ollama status check")
     threading.Thread(target=check_ollama_status, daemon=True).start()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -520,6 +574,7 @@ async def main(page: ft.Page):
         ft.Row([left, right], expand=True,
                vertical_alignment=ft.CrossAxisAlignment.START),
     ], expand=True, spacing=0))
+    logger.info("Application UI ready")
 
 
 if __name__ == "__main__":
